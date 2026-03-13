@@ -4,6 +4,15 @@ const { chromium } = require("playwright");
 const app = express();
 app.use(express.json({ limit: "25mb" }));
 
+function escapeHtml(text = "") {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function wrapHtml(emailHtml, subject = "Email Snapshot") {
   return `
     <!doctype html>
@@ -44,13 +53,19 @@ function wrapHtml(emailHtml, subject = "Email Snapshot") {
   `;
 }
 
-function escapeHtml(text = "") {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+function requireRendererKey(req, res, next) {
+  const expectedKey = process.env.RENDERER_API_KEY;
+  const providedKey = req.header("X-Renderer-Key");
+
+  if (!expectedKey) {
+    return res.status(500).send("Renderer API key is not configured.");
+  }
+
+  if (!providedKey || providedKey !== expectedKey) {
+    return res.status(401).send("Unauthorized");
+  }
+
+  next();
 }
 
 async function renderBuffers(html, subject = "Email Snapshot") {
@@ -134,7 +149,7 @@ app.get("/preview", async (_req, res) => {
   }
 });
 
-app.post("/render-email", async (req, res) => {
+app.post("/render-email", requireRendererKey, async (req, res) => {
   try {
     const { html, subject } = req.body || {};
 
@@ -159,7 +174,7 @@ app.post("/render-email", async (req, res) => {
   }
 });
 
-app.post("/render-email.png", async (req, res) => {
+app.post("/render-email.png", requireRendererKey, async (req, res) => {
   try {
     const { html, subject } = req.body || {};
 
@@ -180,7 +195,7 @@ app.post("/render-email.png", async (req, res) => {
   }
 });
 
-app.post("/render-email.pdf", async (req, res) => {
+app.post("/render-email.pdf", requireRendererKey, async (req, res) => {
   try {
     const { html, subject } = req.body || {};
 

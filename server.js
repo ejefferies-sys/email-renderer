@@ -10,7 +10,7 @@ function wrapHtml(emailHtml, subject = "Email Snapshot") {
     <html>
       <head>
         <meta charset="utf-8" />
-        <title>${subject}</title>
+        <title>${escapeHtml(subject)}</title>
         <style>
           html, body {
             margin: 0;
@@ -31,6 +31,10 @@ function wrapHtml(emailHtml, subject = "Email Snapshot") {
           table {
             max-width: 100% !important;
           }
+
+          * {
+            box-sizing: border-box;
+          }
         </style>
       </head>
       <body>
@@ -38,6 +42,63 @@ function wrapHtml(emailHtml, subject = "Email Snapshot") {
       </body>
     </html>
   `;
+}
+
+function escapeHtml(text = "") {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function renderBuffers(html, subject = "Email Snapshot") {
+  let browser;
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    });
+
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 2000 },
+      deviceScaleFactor: 1,
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
+    });
+
+    await page.setContent(wrapHtml(html, subject), {
+      waitUntil: "domcontentloaded"
+    });
+
+    await page.waitForLoadState("networkidle");
+    await page.waitForTimeout(1500);
+    await page.emulateMedia({ media: "screen" });
+
+    const screenshotBuffer = await page.screenshot({
+      fullPage: true,
+      type: "png"
+    });
+
+    const pdfBuffer = await page.pdf({
+      printBackground: true,
+      format: "A4",
+      margin: {
+        top: "16px",
+        right: "16px",
+        bottom: "16px",
+        left: "16px"
+      }
+    });
+
+    return { screenshotBuffer, pdfBuffer };
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
 }
 
 app.get("/", (_req, res) => {
@@ -63,89 +124,28 @@ app.get("/preview", async (_req, res) => {
     </div>
   `;
 
-  let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    });
-
-    const page = await browser.newPage({
-      viewport: { width: 1280, height: 2000 },
-      deviceScaleFactor: 1,
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
-    });
-
-    await page.setContent(wrapHtml(html, "Preview"), {
-      waitUntil: "domcontentloaded"
-    });
-
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(1200);
-
-    const screenshot = await page.screenshot({
-      fullPage: true,
-      type: "png"
-    });
-
+    const { screenshotBuffer } = await renderBuffers(html, "Preview");
     res.setHeader("Content-Type", "image/png");
-    res.send(screenshot);
+    res.send(screenshotBuffer);
   } catch (error) {
     console.error(error);
     res.status(500).send(String(error));
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 });
 
 app.post("/render-email", async (req, res) => {
-  const { html, subject } = req.body || {};
-
-  if (!html) {
-    return res.status(400).json({ error: "Missing html" });
-  }
-
-  let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
-    });
+    const { html, subject } = req.body || {};
 
-    const page = await browser.newPage({
-      viewport: { width: 1280, height: 2000 },
-      deviceScaleFactor: 1,
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
-    });
+    if (!html) {
+      return res.status(400).json({ error: "Missing html" });
+    }
 
-    await page.setContent(wrapHtml(html, subject || "Email Snapshot"), {
-      waitUntil: "domcontentloaded"
-    });
-
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(1200);
-
-    await page.emulateMedia({ media: "screen" });
-
-    const screenshotBuffer = await page.screenshot({
-      fullPage: true,
-      type: "png"
-    });
-
-    const pdfBuffer = await page.pdf({
-      printBackground: true,
-      format: "A4",
-      margin: {
-        top: "16px",
-        right: "16px",
-        bottom: "16px",
-        left: "16px"
-      }
-    });
+    const { screenshotBuffer, pdfBuffer } = await renderBuffers(
+      html,
+      subject || "Email Snapshot"
+    );
 
     res.json({
       screenshotBase64: screenshotBuffer.toString("base64"),
@@ -156,10 +156,48 @@ app.post("/render-email", async (req, res) => {
     res.status(500).json({
       error: String(error)
     });
-  } finally {
-    if (browser) {
-      await browser.close();
+  }
+});
+
+app.post("/render-email.png", async (req, res) => {
+  try {
+    const { html, subject } = req.body || {};
+
+    if (!html) {
+      return res.status(400).send("Missing html");
     }
+
+    const { screenshotBuffer } = await renderBuffers(
+      html,
+      subject || "Email Snapshot"
+    );
+
+    res.setHeader("Content-Type", "image/png");
+    res.send(screenshotBuffer);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send(String(error));
+  }
+});
+
+app.post("/render-email.pdf", async (req, res) => {
+  try {
+    const { html, subject } = req.body || {};
+
+    if (!html) {
+      return res.status(400).send("Missing html");
+    }
+
+    const { pdfBuffer } = await renderBuffers(
+      html,
+      subject || "Email Snapshot"
+    );
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send(String(error));
   }
 });
 
